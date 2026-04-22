@@ -1,0 +1,8 @@
+{
+  "name": "server-download-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "node-scp": "^0.0.22"
+  }
+}

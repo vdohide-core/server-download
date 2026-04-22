@@ -1,0 +1,147 @@
+package utils
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+// ─── Worker ID ───────────────────────────────────────────────
+
+// GenerateWorkerID generates a unique worker ID.
+// Priority: WORKER_ID env → hostname@1
+func GenerateWorkerID() string {
+	if envWorkerID := os.Getenv("WORKER_ID"); envWorkerID != "" {
+		return envWorkerID
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+	return fmt.Sprintf("%s@1", hostname)
+}
+
+// RandomString generates a random alphanumeric string.
+// If special=true, inserts dash and underscore (matches randomString from TS).
+func RandomString(n int, special bool) string {
+	if special {
+		return RandomStringSpecial(n)
+	}
+	return RandomAlphaNum(n)
+}
+
+// ─── Process Logger ──────────────────────────────────────────
+
+// ProcessLogger writes per-process log output to a file.
+type ProcessLogger struct {
+	file   *os.File
+	logger *log.Logger
+}
+
+// NewProcessLogger creates a new per-process file logger.
+func NewProcessLogger(slug string) *ProcessLogger {
+	logDir := filepath.Join("logs", "process")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		log.Printf("⚠️ Failed to create log dir: %v", err)
+		return &ProcessLogger{}
+	}
+
+	logPath := filepath.Join(logDir, fmt.Sprintf("%s_%s.log", slug, time.Now().Format("20060102_150405")))
+	f, err := os.Create(logPath)
+	if err != nil {
+		log.Printf("⚠️ Failed to create process log: %v", err)
+		return &ProcessLogger{}
+	}
+
+	return &ProcessLogger{
+		file:   f,
+		logger: log.New(f, "", log.LstdFlags),
+	}
+}
+
+// Close closes the log file.
+func (pl *ProcessLogger) Close() {
+	if pl.file != nil {
+		pl.file.Close()
+	}
+}
+
+// Printf logs a formatted message to the process log file.
+func (pl *ProcessLogger) Printf(format string, v ...interface{}) {
+	if pl.logger != nil {
+		pl.logger.Printf(format, v...)
+	}
+}
+
+// ─── Old Log Cleanup ──────────────────────────────────────────
+
+// CleanOldLogs removes process log files older than 7 days.
+func CleanOldLogs() {
+	logDir := filepath.Join("logs", "process")
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		return
+	}
+
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		return
+	}
+
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			os.Remove(filepath.Join(logDir, entry.Name()))
+			removed++
+		}
+	}
+
+	if removed > 0 {
+		log.Printf("🧹 Removed %d old log files", removed)
+	}
+}
+
+// ─── Processing Lock ─────────────────────────────────────────
+
+// ProcessingLock is a mutex-based lock for serializing heavy operations.
+type ProcessingLock struct {
+	mu   *sync.Mutex
+	name string
+}
+
+var (
+	locksMu sync.Mutex
+	locks   = map[string]*sync.Mutex{}
+)
+
+// AcquireProcessingLock acquires a named mutex lock (blocking).
+// Call Release() when done.
+func AcquireProcessingLock(name string) *ProcessingLock {
+	locksMu.Lock()
+	mu, ok := locks[name]
+	if !ok {
+		mu = &sync.Mutex{}
+		locks[name] = mu
+	}
+	locksMu.Unlock()
+
+	mu.Lock()
+	return &ProcessingLock{mu: mu, name: name}
+}
+
+// Release releases the processing lock.
+func (l *ProcessingLock) Release() {
+	if l.mu != nil {
+		l.mu.Unlock()
+	}
+}

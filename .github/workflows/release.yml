@@ -3,7 +3,7 @@ name: Build & Release
 on:
   push:
     tags:
-      - 'v*'   # trigger เมื่อ push tag เช่น v1.0.0
+      - 'v*'
 
 permissions:
   contents: write
@@ -26,22 +26,13 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
 
-      - name: Build Windows (amd64)
-        env:
-          GOOS: windows
-          GOARCH: amd64
-          CGO_ENABLED: "0"
-        run: |
-          mkdir -p dist
-          go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.VERSION }}" \
-            -o dist/windows.exe ./cmd
-
       - name: Build Linux (amd64)
         env:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: "0"
         run: |
+          mkdir -p dist
           go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.VERSION }}" \
             -o dist/linux ./cmd
 
@@ -54,33 +45,9 @@ jobs:
           go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.VERSION }}" \
             -o dist/linux-arm64 ./cmd
 
-      - name: Copy scripts into dist
+      - name: Package scripts
         run: |
-          cp -r scripts dist/scripts
-          cp .env.example dist/.env.example
-          # Copy bat scripts if they exist in .build
-          [ -f .build/start_workers.bat ] && cp .build/start_workers.bat dist/ || true
-          [ -f .build/stop_workers.bat ]  && cp .build/stop_workers.bat  dist/ || true
-
-      - name: Package Windows archive
-        run: |
-          cd dist
-          zip -r server-download-windows-${{ steps.version.outputs.VERSION }}.zip \
-            windows.exe scripts .env.example start_workers.bat stop_workers.bat 2>/dev/null || \
-          zip -r server-download-windows-${{ steps.version.outputs.VERSION }}.zip \
-            windows.exe scripts .env.example
-
-      - name: Package Linux archive
-        run: |
-          cd dist
-          tar czf server-download-linux-${{ steps.version.outputs.VERSION }}.tar.gz \
-            linux scripts .env.example
-
-      - name: Package Linux ARM64 archive
-        run: |
-          cd dist
-          tar czf server-download-linux-arm64-${{ steps.version.outputs.VERSION }}.tar.gz \
-            linux-arm64 scripts .env.example
+          tar czf dist/scripts.tar.gz scripts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -89,6 +56,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            dist/server-download-windows-${{ steps.version.outputs.VERSION }}.zip
-            dist/server-download-linux-${{ steps.version.outputs.VERSION }}.tar.gz
-            dist/server-download-linux-arm64-${{ steps.version.outputs.VERSION }}.tar.gz
+            dist/linux
+            dist/linux-arm64
+            dist/scripts.tar.gz

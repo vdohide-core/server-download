@@ -1,208 +1,179 @@
 # Server Download
 
-เซิร์ฟเวอร์ Go สำหรับดาวน์โหลดและประมวลผลวิดีโอจากแหล่งต่างๆ สำหรับ [vdohide.com](https://vdohide.com)
+Worker service สำหรับดาวน์โหลดและประมวลผลวิดีโอจากแหล่งต่างๆ สำหรับ [VDOHide](https://vdohide.com)
 
 ## Features
 
-- **MissAV** — ดาวน์โหลด HLS playlist จาก `file.metadata.playlist`
-- **XVideos / PornHub** — เรียก Scraper API เพื่อดึง m3u8 URL ล่าสุด (URL หมดอายุได้)
+- **Upload (S3/Local)** — ประมวลผลไฟล์ที่ผู้ใช้ upload ผ่าน `ingests` record
 - **Google Drive** — ดาวน์โหลดผ่าน OAuth2 จาก `oauths` collection
-- **Upload (S3)** — ดาวน์โหลดไฟล์ที่อัพโหลดจาก S3 storage ผ่าน `ingests` record
-- **Auto Worker** — poll ทุก 5 วินาที หา video ที่รอ download
-- **SSH Upload** — อัพโหลดไฟล์ไปยัง storage server ผ่าน SFTP
-- **Progress Tracking** — ติดตามความคืบหน้าแบบ real-time ใน `video_process` collection
-- **Retry & Resume** — รองรับ retry สำหรับ failed jobs และ resume downloads
+- **HLS / Remote** — ดาวน์โหลด m3u8 playlist และ merge เป็น MP4
+- **Scraper** — เรียก Scraper API เพื่อดึง m3u8 URL ล่าสุด
+- **SCP Upload** — อัพโหลดไฟล์ไปยัง storage server ผ่าน SCP (Node.js)
+- **Multi-Worker** — รัน worker หลายตัวพร้อมกัน ด้วย `WORKER_ID`
+- **Auto Retry** — retry อัตโนมัติ 3 ครั้ง, reset file → waiting หาก fail
+- **Progress Tracking** — ติดตาม download/merge/upload ใน `video_process` collection
+- **Clone Media** — clone media record ไปยังไฟล์ที่ clonedFrom อัตโนมัติ
 
 ## Requirements
 
-- **Go** 1.24+
 - **FFmpeg** + **FFprobe** (ต้องอยู่ใน PATH)
-- **MongoDB** (vdohide database)
+- **Node.js** 18+ (สำหรับ SCP upload script)
+- **MongoDB** (vdohide platform database)
 
-## Quick Start
+---
+
+## Installation (Linux Server)
+
+### One-line install
 
 ```bash
-# 1. Clone & install dependencies
-git clone <repo>
-cd server-download
-go mod tidy
-
-# 2. สร้างไฟล์ .env
-cp .env.example .env
-# แก้ไข MONGODB_URI ให้ชี้ไปที่ database ของคุณ
-
-# 3. Run
-go run ./cmd
+curl -fsSL https://raw.githubusercontent.com/vdohide-core/server-download/main/install.sh | sudo -E bash -s -- \
+    --mongodb-uri "mongodb+srv://user:pass@cluster.mongodb.net/platform" \
+    -n 1
 ```
 
-## Configuration
+### Options
 
-สร้างไฟล์ `.env` ที่ root ของโปรเจกต์:
+| Option | Default | คำอธิบาย |
+|---|---|---|
+| `-n, --count` | `1` | จำนวน worker instances |
+| `--mongodb-uri` | `""` | MongoDB connection string |
+| `--storage-id` | `""` | Storage ID (optional) |
+| `--storage-path` | `/home/files` | Local storage path |
+| `--node-version` | `22` | Node.js version |
+| `--uninstall` | — | ถอนการติดตั้ง |
+
+### Examples
+
+```bash
+# 2 workers
+curl -fsSL https://raw.githubusercontent.com/vdohide-core/server-download/main/install.sh | sudo -E bash -s -- \
+    --mongodb-uri "mongodb+srv://..." \
+    --storage-path /home/files \
+    -n 2
+
+# Uninstall
+curl -fsSL https://raw.githubusercontent.com/vdohide-core/server-download/main/install.sh | sudo bash -s -- --uninstall
+```
+
+### After install
+
+```bash
+# ดู logs
+journalctl -u "server-download@*" -f
+
+# ดู worker 1
+journalctl -u "server-download@1" -f
+
+# Restart workers
+for i in $(seq 1 2); do systemctl restart server-download@$i; done
+
+# Stop workers
+for i in $(seq 1 2); do systemctl stop server-download@$i; done
+```
+
+---
+
+## Download Latest Release
+
+```bash
+# Linux amd64
+curl -L https://github.com/vdohide-core/server-download/releases/latest/download/linux -o server-download
+chmod +x server-download
+
+# Linux ARM64
+curl -L https://github.com/vdohide-core/server-download/releases/latest/download/linux-arm64 -o server-download
+chmod +x server-download
+
+# Scripts (Node.js SCP)
+curl -L https://github.com/vdohide-core/server-download/releases/latest/download/scripts.tar.gz | tar xz
+cd scripts && npm install --production
+```
+
+---
+
+## Configuration (.env)
 
 ```env
-# MongoDB connection (required)
-MONGODB_URI=mongodb+srv://user:pass@host/vdohide
+# Required
+MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/platform
 
-# Storage config — ใช้อย่างใดอย่างหนึ่ง:
-# Option A: Local storage (running on storage server)
-STORAGE_PATH="/home/files"
-STORAGE_ID="storage-uuid-here"
+# Optional — ถ้าไม่ตั้งค่าจะใช้ storage จาก DB
+STORAGE_ID=your-storage-uuid
+STORAGE_PATH=/home/files
 
-# Option B: SSH upload (auto-detect จาก DB)
-# ไม่ต้องตั้ง STORAGE_PATH/STORAGE_ID — จะหา storage ที่มี SSH credentials อัตโนมัติ
+# Optional — Worker ID (default: hostname@1)
+WORKER_ID=worker-1
 
-# Scraper URL (optional — fallback ใช้ setting "url_scraping" จาก DB)
-# SCRAPER_URL="http://scraper-server:8081"
-
-# Worker ID (optional — default: hostname@1)
-# WORKER_ID="worker-1"
+# Optional — Scraper URL สำหรับ HLS
+SCRAPER_URL=http://localhost:8081
 ```
 
-### Database Settings
+---
 
-ตั้งค่าใน `settings` collection:
-
-| Setting Name | Type | Description |
-|---|---|---|
-| `download_enabled` | boolean | เปิด/ปิดการทำงาน (default: `false`) |
-| `url_scraping` | string | URL ของ Scraper API (e.g. `http://scraper:8081`) |
-
-## Usage
-
-### Worker Mode (แนะนำ)
+## Development
 
 ```bash
-# Run ปกติ — poll หา jobs อัตโนมัติ
-./server-download
+# Clone
+git clone https://github.com/vdohide-core/server-download.git
+cd server-download
 
-# หรือผ่าน go run
+# ติดตั้ง Node.js dependencies (SCP script)
+cd scripts && npm install && cd ..
+
+# สร้าง .env
+cp .env.example .env
+# แก้ไข MONGODB_URI
+
+# Run
 go run ./cmd
+
+# Build all platforms
+./build.bat
 ```
 
-Worker จะ:
-1. ตรวจสอบ `download_enabled` setting ทุก 5 วินาที
-2. หา video files ที่ `status=waiting` + มี `metadata.sourceType`
-3. Download → Merge → Upload → สร้าง Media record
-4. อัพเดทไฟล์เป็น `status=ready`
+---
 
-### CLI Mode
+## Release
 
 ```bash
-# ดาวน์โหลดจาก m3u8 URL โดยตรง
-./server-download <m3u8_url> <file_id>
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
-## Build
+GitHub Actions จะ build และ release อัตโนมัติพร้อม:
+- `linux` — Linux amd64 binary
+- `linux-arm64` — Linux ARM64 binary  
+- `scripts.tar.gz` — Node.js SCP scripts
 
-```bash
-# Build for current OS
-go build -o server-download ./cmd
-
-# Cross-compile (Windows/Linux/ARM64)
-build.bat
-```
-
-Output จะอยู่ที่ `../binary-build/server-download/`
+---
 
 ## Architecture
 
 ```
-server-download/
-├── cmd/main.go                     # Entry point + worker loop
-├── internal/
-│   ├── config/                     # .env loading
-│   ├── database/                   # MongoDB connection
-│   ├── models/                     # Data models
-│   │   ├── file.go                 # files collection
-│   │   ├── media.go                # medias collection (fileIds[])
-│   │   ├── storage.go              # storages collection (local.ssh)
-│   │   ├── ingest.go               # ingests collection
-│   │   ├── setting.go              # settings collection
-│   │   └── video_process.go        # video_process tracking
-│   ├── downloader/
-│   │   ├── httpclient.go           # Browser-like HTTP client
-│   │   ├── m3u8.go                 # M3U8 playlist parser
-│   │   ├── hls.go                  # HLS segment downloader
-│   │   ├── ffmpeg.go               # FFmpeg merge + probe
-│   │   ├── scraper.go              # Scraper API client
-│   │   ├── s3download.go           # S3 download
-│   │   └── gdrive.go              # Google Drive download (OAuth)
-│   ├── uploader/
-│   │   ├── local.go                # Local file move
-│   │   └── ssh.go                  # SSH/SFTP upload
-│   └── utils/                      # Helpers
-├── .env                            # Configuration
-├── build.bat                       # Cross-compile script
-└── go.mod                          # Go module
+Worker Loop (5s tick)
+├── resumeOrClaimProcess()   — resume งานที่ค้างของ worker นี้
+├── findAndClaimFile()       — หา waiting video → claim เป็น processing
+│   ├── sourceType=upload    → processIngest (S3 / local)
+│   ├── sourceType=gdrive    → processGDrive (OAuth2)
+│   └── sourceType=remote    → processHLS (m3u8 download)
+└── findAndClaimFailedProcess() — retry failed jobs (max 3 ครั้ง)
 ```
 
-## Processing Flow
+## File Processing Flow
 
 ```
-┌─────────────────────────────────────────────────┐
-│                   Worker Loop                    │
-│              (poll every 5 seconds)              │
-└──────────────────────┬──────────────────────────┘
-                       │
-                       ▼
-              ┌────────────────┐
-              │  Find WAITING  │
-              │  video files   │
-              └───────┬────────┘
-                      │
-          ┌───────────┼───────────┬──────────┐
-          ▼           ▼           ▼          ▼
-      ┌───────┐  ┌────────┐  ┌───────┐  ┌───────┐
-      │missav │  │xvideos │  │upload │  │gdrive │
-      │       │  │pornhub │  │       │  │       │
-      └───┬───┘  └───┬────┘  └───┬───┘  └───┬───┘
-          │          │           │           │
-          │     Scraper API      │      Google API
-          │          │           │           │
-          ▼          ▼           ▼           ▼
-      ┌──────────────────────────────────────────┐
-      │        Download (HLS or Direct MP4)       │
-      └─────────────────┬────────────────────────┘
-                        │
-                        ▼
-              ┌────────────────┐
-              │  Merge to MP4  │  (ffmpeg, skip for direct MP4)
-              │  + Probe info  │
-              └───────┬────────┘
-                      │
-                      ▼
-              ┌────────────────┐
-              │  Upload to     │  (Local move or SSH/SFTP)
-              │  Storage       │
-              └───────┬────────┘
-                      │
-                      ▼
-              ┌────────────────┐
-              │  Create Media  │  → medias collection
-              │  Update File   │  → status: ready
-              └────────────────┘
+Download → Merge (FFmpeg h264+faststart) → Upload (SCP/Local) → Media Record → Done
 ```
 
-## Source Types
+## Collections Used
 
-| sourceType | Source | Download Method | Merge Required |
-|---|---|---|---|
-| `missav` | `file.metadata.playlist` | HLS segments | ✅ FFmpeg |
-| `xvideos` | Scraper API → m3u8 | HLS segments | ✅ FFmpeg |
-| `pornhub` | Scraper API → m3u8 | HLS segments | ✅ FFmpeg |
-| `upload` | `ingests.path` (S3) | Direct MP4 | ❌ |
-| `gdrive` | `file.metadata.source` | Google Drive API | ❌ |
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `MONGODB_URI` | ✅ | `mongodb://localhost:27017` | MongoDB connection string |
-| `STORAGE_PATH` | ❌ | — | Local storage path (if running on storage server) |
-| `STORAGE_ID` | ❌ | — | Storage ID (pair with STORAGE_PATH) |
-| `SCRAPER_URL` | ❌ | — | Scraper API URL (fallback: DB setting) |
-| `WORKER_ID` | ❌ | `hostname@1` | Worker identifier |
-
-## License
-
-Private — for vdohide.com internal use only.
+| Collection | การใช้งาน |
+|---|---|
+| `files` | หา waiting video, update status |
+| `video_process` | track download/merge/upload progress |
+| `ingests` | หา uploaded file path (S3 / local) |
+| `storages` | หา storage config (SSH, S3, path) |
+| `medias` | บันทึก processed media record |
+| `oauths` | OAuth2 token สำหรับ GDrive |
+| `settings` | `download_enabled`, `url_scraping` |

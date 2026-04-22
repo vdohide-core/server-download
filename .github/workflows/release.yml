@@ -57,42 +57,38 @@ jobs:
       - name: Copy scripts into dist
         run: |
           cp -r scripts dist/scripts
-
-      - name: Copy .env.example (if exists)
-        run: |
-          if [ -f .env.example ]; then cp .env.example dist/.env.example; fi
+          cp .env.example dist/.env.example
+          # Copy bat scripts if they exist in .build
+          [ -f .build/start_workers.bat ] && cp .build/start_workers.bat dist/ || true
+          [ -f .build/stop_workers.bat ]  && cp .build/stop_workers.bat  dist/ || true
 
       - name: Package Windows archive
         run: |
           cd dist
-          cp -r scripts windows-scripts
           zip -r server-download-windows-${{ steps.version.outputs.VERSION }}.zip \
-            windows.exe windows-scripts start_workers.bat stop_workers.bat 2>/dev/null || \
+            windows.exe scripts .env.example start_workers.bat stop_workers.bat 2>/dev/null || \
           zip -r server-download-windows-${{ steps.version.outputs.VERSION }}.zip \
-            windows.exe scripts
+            windows.exe scripts .env.example
 
       - name: Package Linux archive
         run: |
           cd dist
           tar czf server-download-linux-${{ steps.version.outputs.VERSION }}.tar.gz \
-            linux scripts
+            linux scripts .env.example
 
       - name: Package Linux ARM64 archive
         run: |
           cd dist
           tar czf server-download-linux-arm64-${{ steps.version.outputs.VERSION }}.tar.gz \
-            linux-arm64 scripts
+            linux-arm64 scripts .env.example
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ steps.version.outputs.VERSION }}
+          name: Release ${{ steps.version.outputs.VERSION }}
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
             dist/server-download-windows-${{ steps.version.outputs.VERSION }}.zip
             dist/server-download-linux-${{ steps.version.outputs.VERSION }}.tar.gz
             dist/server-download-linux-arm64-${{ steps.version.outputs.VERSION }}.tar.gz
-            dist/windows.exe
-            dist/linux
-            dist/linux-arm64

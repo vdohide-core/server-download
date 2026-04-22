@@ -33,7 +33,7 @@ print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 while [[ $# -gt 0 ]]; do
     case $1 in
         --uninstall)       UNINSTALL=true; shift ;;
-        -n|--count)        WORKER_COUNT="$2"; shift 2 ;;
+        --count|-w)        WORKER_COUNT="$2"; shift 2 ;;
         --mongodb-uri)     MONGODB_URI="$2"; shift 2 ;;
         --storage-id)      STORAGE_ID="$2"; shift 2 ;;
         --storage-path)    STORAGE_PATH="$2"; shift 2 ;;
@@ -45,7 +45,8 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --uninstall          Uninstall completely"
-            echo "  -n, --count NUM      Number of worker instances (default: 1)"
+            echo "  --count NUM          Number of worker instances (default: 1)"
+            echo "  -w NUM               Alias for --count"
             echo "  --mongodb-uri URI    MongoDB connection string"
             echo "  --storage-id ID      Storage ID (optional)"
             echo "  --storage-path DIR   Storage path (default: /home/files)"
@@ -58,7 +59,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "  # Install with 2 workers + MongoDB"
             echo "  curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPO/main/install.sh | sudo -E bash -s -- \\"
-            echo "      --mongodb-uri \"mongodb+srv://user:pass@host/db\" -n 2"
+            echo "      --mongodb-uri \"mongodb+srv://user:pass@host/db\" --count 2"
             echo ""
             echo "  # Uninstall"
             echo "  curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPO/main/install.sh | sudo -E bash -s -- --uninstall"

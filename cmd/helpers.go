@@ -198,7 +198,7 @@ func cloneMediaToClonedFiles(ctx context.Context, sourceFileID string, media mod
 		}
 
 		now := time.Now()
-		slug11 := utils.RandomString(11, false)
+		slug11 := utils.RandomString(11, true)
 		clonedMedia := models.Media{
 			ID:         uuid.New().String(),
 			Type:       media.Type,

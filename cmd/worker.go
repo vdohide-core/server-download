@@ -42,14 +42,17 @@ func resolveStorage(ctx context.Context) (*models.Storage, error) {
 
 	// Find storage with SSH credentials
 	filter := bson.M{
-		"enable":             true,
-		"type":               "local",
-		"local.ssh.username": bson.M{"$exists": true, "$ne": ""},
-		"local.ssh.password": bson.M{"$exists": true, "$ne": ""},
-		"local.ssh.port":     bson.M{"$gt": 0},
+		"enable":              true,
+		"status":              "online",
+		"type":                "local",
+		"local.ssh.username":  bson.M{"$exists": true, "$ne": ""},
+		"local.ssh.password":  bson.M{"$exists": true, "$ne": ""},
+		"local.ssh.port":      bson.M{"$gt": 0},
+		"capacity.percentage": bson.M{"$lt": 95},
+		"accepts":             bson.M{"$in": []string{"video"}},
 	}
 	var storage models.Storage
-	err := database.Storages().FindOne(ctx, filter, options.FindOne().SetSort(bson.M{"createdAt": 1})).Decode(&storage)
+	err := database.Storages().FindOne(ctx, filter, options.FindOne().SetSort(bson.M{"capacity.percentage": 1})).Decode(&storage)
 	if err != nil {
 		return nil, fmt.Errorf("no storage with SSH credentials available")
 	}
@@ -363,7 +366,7 @@ func runProcess(ctx context.Context, process *models.VideoProcess, storage *mode
 
 	// ─── COMPLETE ─────────────────────────────────────────────
 	now := time.Now()
-	mediaSlug := utils.RandomString(11, false)
+	mediaSlug := utils.RandomString(11, true)
 	mediaType := models.MediaTypeVideo
 	mimeType := "video/mp4"
 	resPtr := &resolution

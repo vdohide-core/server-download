@@ -35,13 +35,13 @@ func RandomString(n int, special bool) string {
 
 // ─── Process Logger ──────────────────────────────────────────
 
-// ProcessLogger writes per-process log output to a file.
+// ProcessLogger redirects the global logger to write to both stdout and a per-process log file.
 type ProcessLogger struct {
-	file   *os.File
-	logger *log.Logger
+	file *os.File
 }
 
-// NewProcessLogger creates a new per-process file logger.
+// NewProcessLogger creates a per-process file logger and redirects global log output
+// to io.MultiWriter(stdout, file) so every log.Printf goes to both console and file.
 func NewProcessLogger(slug string) *ProcessLogger {
 	logDir := filepath.Join("logs", "process")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
@@ -49,31 +49,30 @@ func NewProcessLogger(slug string) *ProcessLogger {
 		return &ProcessLogger{}
 	}
 
-	logPath := filepath.Join(logDir, fmt.Sprintf("%s_%s.log", slug, time.Now().Format("20060102_150405")))
+	logPath := filepath.Join(logDir, fmt.Sprintf("%s.log", slug))
 	f, err := os.Create(logPath)
 	if err != nil {
 		log.Printf("⚠️ Failed to create process log: %v", err)
 		return &ProcessLogger{}
 	}
 
-	return &ProcessLogger{
-		file:   f,
-		logger: log.New(f, "", log.LstdFlags),
-	}
+	// Redirect global logger → file only (ไม่ออก console ระหว่าง process)
+	log.SetOutput(f)
+
+	return &ProcessLogger{file: f}
 }
 
-// Close closes the log file.
+// Close restores the global logger to stdout-only and closes the log file.
 func (pl *ProcessLogger) Close() {
+	log.SetOutput(os.Stdout)
 	if pl.file != nil {
 		pl.file.Close()
 	}
 }
 
-// Printf logs a formatted message to the process log file.
+// Printf is kept for compatibility but is a no-op — use log.Printf directly.
 func (pl *ProcessLogger) Printf(format string, v ...interface{}) {
-	if pl.logger != nil {
-		pl.logger.Printf(format, v...)
-	}
+	log.Printf(format, v...)
 }
 
 // ─── Old Log Cleanup ──────────────────────────────────────────

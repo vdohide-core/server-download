@@ -81,6 +81,7 @@ func parseM3U8Content(content string, baseURL string) ([]StreamInfo, error) {
 
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	var currentStream *StreamInfo
+	hasExtInf := false // ตรวจว่าเป็น segment playlist โดยตรง
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -98,9 +99,15 @@ func parseM3U8Content(content string, baseURL string) ([]StreamInfo, error) {
 				currentStream.Bandwidth, _ = strconv.Atoi(matches[1])
 			}
 
+		} else if strings.HasPrefix(line, "#EXTINF:") {
+			hasExtInf = true
+
 		} else if currentStream != nil && !strings.HasPrefix(line, "#") && line != "" {
 			if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
 				currentStream.URL = line
+			} else if strings.HasPrefix(line, "//") {
+				// protocol-relative URL → inherit scheme from base
+				currentStream.URL = base.Scheme + ":" + line
 			} else {
 				currentStream.URL = baseDir + line
 			}
@@ -110,6 +117,11 @@ func parseM3U8Content(content string, baseURL string) ([]StreamInfo, error) {
 	}
 
 	if len(streams) == 0 {
+		// ถ้าไม่มี stream variants แต่มี #EXTINF → URL นี้คือ segment playlist โดยตรง
+		if hasExtInf {
+			log.Printf("ℹ️  No master streams found — treating URL as segment playlist directly: %s", baseURL)
+			return []StreamInfo{{URL: baseURL, Resolution: "unknown"}}, nil
+		}
 		return nil, fmt.Errorf("no streams found in playlist")
 	}
 
@@ -121,6 +133,7 @@ func parseM3U8Content(content string, baseURL string) ([]StreamInfo, error) {
 
 	return streams, nil
 }
+
 
 // SelectHighestResolution returns the stream with highest resolution
 func SelectHighestResolution(streams []StreamInfo) StreamInfo {
@@ -203,6 +216,9 @@ func parseSegmentContent(content string, baseURL string) ([]string, error) {
 		var segmentURL string
 		if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
 			segmentURL = line
+		} else if strings.HasPrefix(line, "//") {
+			// protocol-relative URL → inherit scheme from base
+			segmentURL = base.Scheme + ":" + line
 		} else {
 			segmentURL = baseDir + line
 			if base.RawQuery != "" && !strings.Contains(line, "?") {

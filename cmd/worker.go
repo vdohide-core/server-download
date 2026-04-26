@@ -200,6 +200,84 @@ func runProcess(ctx context.Context, process *models.VideoProcess, storage *mode
 			return err
 		}
 
+	case "direct":
+		source := ""
+		if file.Metadata != nil && file.Metadata.Source != nil {
+			source = *file.Metadata.Source
+		}
+		if source == "" {
+			failProcess(ctx, process.ID, fileID, slug, "no direct URL source")
+			return fmt.Errorf("no direct URL source")
+		}
+
+		startStep(ctx, process.ID, "download")
+		os.MkdirAll(downloadDir, 0755)
+
+		// ถ้าเป็น m3u8 → ใช้ HLS flow เหมือน default (fall-through ด้วย goto ไม่ได้ใน Go)
+		// จึงแยก branch ชัดเจน
+		if !downloader.IsDirectVideoURL(source) {
+			// HLS / m3u8 path
+			result, err := downloader.DownloadHLSSegments(source, downloadDir, &downloader.DownloadProgress{
+				OnProgress: func(current, total int) {
+					updateDownloadProgress(ctx, process.ID, current, total)
+				},
+			})
+			if err != nil {
+				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("download: %v", err))
+				return err
+			}
+			database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{"resolution": result.ResolutionFull}})
+			completeStep(ctx, process.ID, "download")
+			log.Printf("✅ [%s] HLS download complete (%d segments)", slug, result.SegmentCount)
+
+			if isCancelled(ctx, process.ID) {
+				downloader.Cleanup(downloadDir)
+				return nil
+			}
+
+			log.Printf("🔒 [%s] Waiting for processing lock...", slug)
+			procLock := utils.AcquireProcessingLock("processing")
+			defer procLock.Release()
+
+			startStep(ctx, process.ID, "merge")
+			mp4Path = filepath.Join(downloadDir, fileName)
+			mergeRes, err := downloader.MergeToMP4(result.SegmentFiles, mp4Path, func(pct int) {
+				database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{
+					"timeline.merge.percent": float64(pct), "overallPercent": 33 + float64(pct)*0.33, "updatedAt": time.Now(),
+				}})
+			})
+			if err != nil {
+				if downloader.IsDiskFullError(err) {
+					database.VideoProcess().DeleteOne(ctx, bson.M{"_id": process.ID})
+					database.Files().UpdateOne(ctx, bson.M{"_id": fileID}, bson.M{"$set": bson.M{"status": models.FileStatusWaiting, "updatedAt": time.Now()}})
+					downloader.Cleanup(downloadDir)
+					return fmt.Errorf("disk full: %w", err)
+				}
+				downloader.Cleanup(downloadDir)
+				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("merge: %v", err))
+				return err
+			}
+			completeStep(ctx, process.ID, "merge")
+			fileSize = mergeRes.FileSize
+			log.Printf("✅ [%s] Merge complete (%.2f MB)", slug, float64(fileSize)/1024/1024)
+		} else {
+			// Direct video file path (mp4, mkv, webm, etc.)
+			isDirectMP4 = true
+			mp4Path = filepath.Join(downloadDir, "source.mp4")
+
+			if err := downloader.DownloadDirectFile(source, mp4Path, func(done, total int64) {
+				if total > 0 {
+					pct := float64(done) / float64(total) * 100
+					database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{
+						"timeline.download.percent": pct, "overallPercent": pct * 0.33, "updatedAt": time.Now(),
+					}})
+				}
+			}); err != nil {
+				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("direct download: %v", err))
+				return err
+			}
+		}
+
 	default: // HLS / remote / missav / xvideos / pornhub
 		m3u8URL := ""
 		if file.Metadata != nil && file.Metadata.Playlist != nil {

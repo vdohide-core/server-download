@@ -340,6 +340,13 @@ func validateSegmentFile(path string) error {
 		return fmt.Errorf("file is empty")
 	}
 
+	// TS sync-byte check เฉพาะไฟล์ .ts เท่านั้น
+	// segment ที่ CDN disguise เป็น .jpeg ไม่มี TS sync byte
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext != ".ts" {
+		return nil
+	}
+
 	if info.Size() < 188 {
 		return fmt.Errorf("file too small (%d bytes)", info.Size())
 	}

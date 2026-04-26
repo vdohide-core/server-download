@@ -61,7 +61,7 @@ func resolveStorage(ctx context.Context) (*models.Storage, error) {
 
 // ─── Main Process ─────────────────────────────────────────────
 
-func runProcess(ctx context.Context, process *models.VideoProcess, storage *models.Storage) error {
+func runProcess(ctx context.Context, process *models.VideoProcess) error {
 	fileID := derefStr(process.FileID)
 	slug := derefStr(process.Slug)
 
@@ -397,6 +397,15 @@ func runProcess(ctx context.Context, process *models.VideoProcess, storage *mode
 	}
 
 	// ─── STEP 3: UPLOAD ───────────────────────────────────────
+	// Resolve storage ตอน upload — เพื่อให้เลือก node ที่ดีที่สุด ณ เวลานั้น
+	storage, err := resolveStorage(ctx)
+	if err != nil || storage == nil {
+		failProcess(ctx, process.ID, fileID, slug, "no storage available for upload")
+		downloader.Cleanup(downloadDir)
+		return fmt.Errorf("no storage available")
+	}
+	log.Printf("📦 [%s] Storage resolved: %s", slug, storage.Name)
+
 	localStoragePath := config.AppConfig.StoragePath
 	localStorageID := config.AppConfig.StorageId
 

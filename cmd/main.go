@@ -103,18 +103,12 @@ func getScraperURL(ctx context.Context) string {
 // ─── Job Discovery ────────────────────────────────────────────
 
 func processNextJob(ctx context.Context) {
-	storage, err := resolveStorage(ctx)
-	if err != nil || storage == nil {
-		log.Println("⚠️  No storage available — skipping this tick")
-		return
-	}
-
 	if process := resumeOrClaimProcess(ctx); process != nil {
 		slug := ""
 		if process.Slug != nil {
 			slug = *process.Slug
 		}
-		if err := runProcess(ctx, process, storage); err != nil {
+		if err := runProcess(ctx, process); err != nil {
 			log.Printf("❌ Resume failed: %s - %v", slug, err)
 		}
 		return
@@ -133,7 +127,7 @@ func processNextJob(ctx context.Context) {
 			}
 		}
 		log.Printf("📥 New: [%s] %s (sourceType: %s)", slug, file.Name, src)
-		if err := runProcess(ctx, process, storage); err != nil {
+		if err := runProcess(ctx, process); err != nil {
 			log.Printf("❌ Failed: %s - %v", slug, err)
 		}
 		return
@@ -149,7 +143,7 @@ func processNextJob(ctx context.Context) {
 			rc = *retryProcess.RetryCount
 		}
 		log.Printf("🔄 Retry: [%s] (attempt %d)", slug, rc+1)
-		if err := runProcess(ctx, retryProcess, storage); err != nil {
+		if err := runProcess(ctx, retryProcess); err != nil {
 			log.Printf("❌ Retry failed: %s - %v", slug, err)
 		}
 	}

@@ -41,7 +41,7 @@ type StepProgress struct {
 // Collection: "video_process" | _id: String
 type VideoProcess struct {
 	ID             string      `bson:"_id" json:"id" goose:"required,default:uuid"`
-	SpaceID        *string     `bson:"spaceId,omitempty" json:"spaceId,omitempty" goose:"ref:files,index"`
+	SpaceID        *string     `bson:"spaceId,omitempty" json:"spaceId,omitempty" goose:"ref:workspaces,index"`
 	FileID         *string     `bson:"fileId,omitempty" json:"fileId,omitempty" goose:"ref:files,index"`
 	Slug           *string     `bson:"slug,omitempty" json:"slug,omitempty" goose:"index"`
 	WorkerID       *string     `bson:"workerId,omitempty" json:"workerId,omitempty" goose:"index"`

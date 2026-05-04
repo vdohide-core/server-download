@@ -105,57 +105,96 @@ func refreshAccessToken(oauth *GoogleOAuth, oauthsCol *mongo.Collection) (string
 	return result.AccessToken, nil
 }
 
-// GetRandomOAuth finds a random enabled OAuth record from the oauths collection
-func GetRandomOAuth(oauthsCol *mongo.Collection) (*GoogleOAuth, error) {
+// GetRandomOAuth finds a random enabled OAuth record from the oauths collection.
+// It first tries to find one scoped to the given spaceId, then falls back to global (no spaceId).
+func GetRandomOAuth(oauthsCol *mongo.Collection, spaceId string) (*GoogleOAuth, error) {
 	ctx := context.Background()
 
+	// 1) Try workspace-scoped OAuth first
+	if spaceId != "" {
+		if oauth, err := findRandomOAuth(ctx, oauthsCol, bson.M{
+			"enable":  true,
+			"spaceId": spaceId,
+		}); err == nil {
+			return oauth, nil
+		}
+	}
+
+	// 2) Fallback to global OAuth (no spaceId)
+	if oauth, err := findRandomOAuth(ctx, oauthsCol, bson.M{
+		"enable": true,
+		"spaceId": bson.M{"$exists": false},
+	}); err == nil {
+		return oauth, nil
+	}
+
+	// 3) Last resort: any enabled OAuth
+	if oauth, err := findRandomOAuth(ctx, oauthsCol, bson.M{
+		"enable": true,
+	}); err == nil {
+		return oauth, nil
+	}
+
+	return nil, fmt.Errorf("no enabled OAuth credentials found")
+}
+
+func findRandomOAuth(ctx context.Context, col *mongo.Collection, filter bson.M) (*GoogleOAuth, error) {
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"enable": true}}},
+		{{Key: "$match", Value: filter}},
 		{{Key: "$sample", Value: bson.M{"size": 1}}},
 	}
 
-	cursor, err := oauthsCol.Aggregate(ctx, pipeline)
+	cursor, err := col.Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, fmt.Errorf("query oauths: %w", err)
+		return nil, err
 	}
 	defer cursor.Close(ctx)
 
 	if !cursor.Next(ctx) {
-		return nil, fmt.Errorf("no enabled OAuth credentials found in oauths collection")
+		return nil, fmt.Errorf("no match")
 	}
 
 	var oauth GoogleOAuth
 	if err := cursor.Decode(&oauth); err != nil {
-		return nil, fmt.Errorf("decode oauth: %w", err)
+		return nil, err
 	}
-
 	return &oauth, nil
 }
 
 // DownloadFromGDrive downloads a file from Google Drive using OAuth credentials
-func DownloadFromGDrive(gdriveFileID string, outputPath string, oauthsCol *mongo.Collection, onProgress func(downloaded, total int64)) error {
+func DownloadFromGDrive(gdriveFileID string, outputPath string, oauthsCol *mongo.Collection, spaceId string, onProgress func(downloaded, total int64)) error {
 	log.Printf("📥 Google Drive download: %s", gdriveFileID)
 
-	oauth, err := GetRandomOAuth(oauthsCol)
+	var accessToken string
+	oauth, err := GetRandomOAuth(oauthsCol, spaceId)
 	if err != nil {
-		return fmt.Errorf("get OAuth: %w", err)
+		log.Printf("⚠️  No OAuth credentials found — trying public download")
+	} else {
+		token, err := refreshAccessToken(oauth, oauthsCol)
+		if err != nil {
+			log.Printf("⚠️  OAuth token refresh failed: %v — trying public download", err)
+		} else {
+			accessToken = token
+		}
 	}
 
-	accessToken, err := refreshAccessToken(oauth, oauthsCol)
-	if err != nil {
-		return fmt.Errorf("refresh token: %w", err)
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
 	}
 
+	// Public download (no OAuth token)
+	if accessToken == "" {
+		log.Printf("📥 [public] Downloading via public URL...")
+		return downloadGDrivePublic(gdriveFileID, outputPath, onProgress)
+	}
+
+	// Authenticated download
 	fileInfo, err := getGDriveFileInfo(gdriveFileID, accessToken)
 	if err != nil {
 		return fmt.Errorf("get file info: %w", err)
 	}
 
 	log.Printf("📋 File: %s (%s bytes, %s)", fileInfo.Name, fileInfo.Size, fileInfo.MimeType)
-
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-		return fmt.Errorf("create output dir: %w", err)
-	}
 
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -177,11 +216,111 @@ func DownloadFromGDrive(gdriveFileID string, outputPath string, oauthsCol *mongo
 	return fmt.Errorf("GDrive download failed after 3 attempts: %v", lastErr)
 }
 
+// downloadGDrivePublic downloads a public GDrive file without OAuth
+// using the direct download URL that doesn't require API credentials.
+func downloadGDrivePublic(fileID, outputPath string, onProgress func(downloaded, total int64)) error {
+	dlURL := fmt.Sprintf("https://drive.google.com/uc?export=download&id=%s", fileID)
+
+	client := &http.Client{
+		Timeout: 5 * time.Hour,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return nil // follow redirects
+		},
+	}
+
+	resp, err := client.Get(dlURL)
+	if err != nil {
+		return fmt.Errorf("public download request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Handle large file confirmation page
+	if resp.StatusCode == 200 && strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		// Extract confirm token from the HTML page
+		htmlStr := string(body)
+		confirmURL := ""
+		if idx := strings.Index(htmlStr, "href=\"/uc?export=download&amp;"); idx != -1 {
+			end := strings.Index(htmlStr[idx+6:], "\"")
+			if end != -1 {
+				confirmURL = "https://drive.google.com" + strings.ReplaceAll(htmlStr[idx+6:idx+6+end], "&amp;", "&")
+			}
+		}
+		if confirmURL == "" {
+			// Try confirm=t parameter directly
+			confirmURL = dlURL + "&confirm=t"
+		}
+
+		resp, err = client.Get(confirmURL)
+		if err != nil {
+			return fmt.Errorf("public download confirm: %w", err)
+		}
+		defer resp.Body.Close()
+	}
+
+	if resp.StatusCode == 404 {
+		return fmt.Errorf("Google Drive file not found: %s (404)", fileID)
+	}
+	if resp.StatusCode == 403 {
+		return fmt.Errorf("access denied to Google Drive file: %s (403) — file may not be public", fileID)
+	}
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("public download error %d: %s", resp.StatusCode, string(body))
+	}
+
+	totalSize := resp.ContentLength
+	log.Printf("📋 [public] Download started (size: %d bytes)", totalSize)
+
+	out, err := os.Create(outputPath + ".tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+
+	var downloaded int64
+	buf := make([]byte, 256*1024)
+
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, wErr := out.Write(buf[:n]); wErr != nil {
+				out.Close()
+				os.Remove(outputPath + ".tmp")
+				return fmt.Errorf("write error: %w", wErr)
+			}
+			downloaded += int64(n)
+			if onProgress != nil && totalSize > 0 {
+				onProgress(downloaded, totalSize)
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			out.Close()
+			os.Remove(outputPath + ".tmp")
+			return fmt.Errorf("read error: %w", err)
+		}
+	}
+	out.Close()
+
+	if err := os.Rename(outputPath+".tmp", outputPath); err != nil {
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+
+	log.Printf("✅ [public] Downloaded %.2f MB from Google Drive", float64(downloaded)/1024/1024)
+	return nil
+}
+
 func getGDriveFileInfo(fileID, accessToken string) (*GDriveFileInfo, error) {
 	apiURL := fmt.Sprintf("https://www.googleapis.com/drive/v3/files/%s?fields=id,name,size,mimeType&supportsAllDrives=true", fileID)
 
 	req, _ := http.NewRequest("GET", apiURL, nil)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -211,7 +350,9 @@ func downloadGDriveFile(fileID, accessToken, outputPath string, onProgress func(
 	apiURL := fmt.Sprintf("https://www.googleapis.com/drive/v3/files/%s?alt=media&supportsAllDrives=true", fileID)
 
 	req, _ := http.NewRequest("GET", apiURL, nil)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 
 	client := &http.Client{Timeout: 5 * time.Hour}
 	resp, err := client.Do(req)

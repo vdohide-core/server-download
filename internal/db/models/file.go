@@ -24,14 +24,6 @@ type FileMetadata struct {
 	Playlist    *string     `bson:"playlist,omitempty" json:"playlist,omitempty"`
 }
 
-// FileCapacity holds storage capacity stats embedded in a File (space).
-// Matches: capacitySchema (TS)
-type FileCapacity struct {
-	Total      interface{} `bson:"total" json:"total"`
-	Used       interface{} `bson:"used" json:"used"`
-	Free       interface{} `bson:"free" json:"free"`
-	Percentage float64     `bson:"percentage" json:"percentage"`
-}
 
 // File represents a file/folder/space record.
 // Collection: "files" | _id: String (UUID)
@@ -50,14 +42,12 @@ type File struct {
 	Status     string        `bson:"status" json:"status" goose:"default:waiting"`
 	Type       string        `bson:"type" json:"type" goose:"default:video"`
 	Name       string        `bson:"name" json:"name" goose:"required"`
-	OwnerID    *string       `bson:"ownerId,omitempty" json:"ownerId,omitempty" goose:"ref:user,index"`
 	CreatorID  *string       `bson:"creatorId,omitempty" json:"creatorId,omitempty" goose:"index"`
 	ParentID   *string       `bson:"parentId,omitempty" json:"parentId,omitempty" goose:"ref:files,index"`
-	SpaceID    *string       `bson:"spaceId,omitempty" json:"spaceId,omitempty" goose:"ref:files,index"`
+	SpaceID    *string       `bson:"spaceId,omitempty" json:"spaceId,omitempty" goose:"ref:workspaces,index"`
 	Slug       string        `bson:"slug" json:"slug" goose:"unique,default:random(11),index"`
 	ClonedFrom *string       `bson:"clonedFrom,omitempty" json:"clonedFrom,omitempty" goose:"ref:files"`
 	Metadata   *FileMetadata `bson:"metadata,omitempty" json:"metadata,omitempty"`
-	Capacity   *FileCapacity `bson:"capacity,omitempty" json:"capacity,omitempty"`
 	CreatedAt  time.Time     `bson:"createdAt" json:"createdAt" goose:"default:now"`
 	UpdatedAt  time.Time     `bson:"updatedAt" json:"updatedAt" goose:"default:now"`
 }

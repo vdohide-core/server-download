@@ -12,7 +12,8 @@ type OAuth struct {
 	ID           string      `bson:"_id" json:"id" goose:"required,default:uuid"`
 	Enable       bool        `bson:"enable" json:"enable"`
 	Email        string      `bson:"email" json:"email" goose:"index"`
-	OwnerID      *string     `bson:"ownerId,omitempty" json:"ownerId,omitempty" goose:"ref:user,index"`
+	CreatorID    *string     `bson:"creatorId,omitempty" json:"creatorId,omitempty" goose:"ref:user,index"`
+	SpaceID      *string     `bson:"spaceId,omitempty" json:"spaceId,omitempty" goose:"ref:workspaces,index"`
 	ClientID     *string     `bson:"client_id,omitempty" json:"clientId,omitempty"`
 	ClientSecret *string     `bson:"client_secret,omitempty" json:"-"`
 	RefreshToken *string     `bson:"refresh_token,omitempty" json:"-"`

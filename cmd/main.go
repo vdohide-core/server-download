@@ -42,26 +42,33 @@ func startWorkerLoop() {
 	utils.CleanOldLogs()
 
 	ctx := context.Background()
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
 
 	total, _ := database.Files().CountDocuments(ctx, bson.M{})
 	waiting, _ := database.Files().CountDocuments(ctx, bson.M{
-		"status": models.FileStatusWaiting,
-		"type":   models.FileTypeVideo,
-		"clonedFrom": bson.M{"$exists": false},
+		"status":             models.FileStatusWaiting,
+		"type":               models.FileTypeVideo,
+		"clonedFrom":         bson.M{"$exists": false},
+		"metadata.trashedAt": bson.M{"$exists": false},
+		"metadata.deletedAt": bson.M{"$exists": false},
 	})
 	log.Printf("📊 DB Stats: Total Files: %d, Waiting Videos: %d", total, waiting)
 
-	if isDownloadEnabled(ctx) {
-		processNextJob(ctx)
-	}
+	const (
+		pollBusy = 5 * time.Second
+		pollIdle = 30 * time.Second
+	)
 
-	for range ticker.C {
+	for {
 		if !isDownloadEnabled(ctx) {
+			time.Sleep(pollIdle)
 			continue
 		}
-		processNextJob(ctx)
+		hadWork := processNextJob(ctx)
+		if hadWork {
+			time.Sleep(pollBusy)
+		} else {
+			time.Sleep(pollIdle)
+		}
 	}
 }
 
@@ -102,7 +109,7 @@ func getScraperURL(ctx context.Context) string {
 
 // ─── Job Discovery ────────────────────────────────────────────
 
-func processNextJob(ctx context.Context) {
+func processNextJob(ctx context.Context) bool {
 	if process := resumeOrClaimProcess(ctx); process != nil {
 		slug := ""
 		if process.Slug != nil {
@@ -111,7 +118,7 @@ func processNextJob(ctx context.Context) {
 		if err := runProcess(ctx, process); err != nil {
 			log.Printf("❌ Resume failed: %s - %v", slug, err)
 		}
-		return
+		return true
 	}
 
 	process, file, err := findAndClaimFile(ctx)
@@ -130,7 +137,7 @@ func processNextJob(ctx context.Context) {
 		if err := runProcess(ctx, process); err != nil {
 			log.Printf("❌ Failed: %s - %v", slug, err)
 		}
-		return
+		return true
 	}
 
 	if retryProcess := findAndClaimFailedProcess(ctx); retryProcess != nil {
@@ -146,7 +153,10 @@ func processNextJob(ctx context.Context) {
 		if err := runProcess(ctx, retryProcess); err != nil {
 			log.Printf("❌ Retry failed: %s - %v", slug, err)
 		}
+		return true
 	}
+
+	return false
 }
 
 func resumeOrClaimProcess(ctx context.Context) *models.VideoProcess {
@@ -169,9 +179,11 @@ func resumeOrClaimProcess(ctx context.Context) *models.VideoProcess {
 
 func findAndClaimFile(ctx context.Context) (*models.VideoProcess, *models.File, error) {
 	filter := bson.M{
-		"status":     models.FileStatusWaiting,
-		"type":       models.FileTypeVideo,
-		"clonedFrom": bson.M{"$exists": false},
+		"status":             models.FileStatusWaiting,
+		"type":               models.FileTypeVideo,
+		"clonedFrom":         bson.M{"$exists": false},
+		"metadata.trashedAt": bson.M{"$exists": false},
+		"metadata.deletedAt": bson.M{"$exists": false},
 	}
 	opts := options.Find().SetSort(bson.M{"createdAt": 1}).SetLimit(20)
 
@@ -208,7 +220,7 @@ func findAndClaimFile(ctx context.Context) (*models.VideoProcess, *models.File, 
 			}
 		}
 
-		if file.Metadata != nil && file.Metadata.DeletedAt != nil {
+		if file.Metadata != nil && (file.Metadata.DeletedAt != nil || file.Metadata.TrashedAt != nil) {
 			continue
 		}
 

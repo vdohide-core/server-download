@@ -188,7 +188,11 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 			return fmt.Errorf("no gdrive source")
 		}
 
-		if err := downloader.DownloadFromGDrive(source, mp4Path, database.Oauths(), func(done, total int64) {
+		fileSpaceId := ""
+		if file.SpaceID != nil {
+			fileSpaceId = *file.SpaceID
+		}
+		if err := downloader.DownloadFromGDrive(source, mp4Path, database.Oauths(), fileSpaceId, func(done, total int64) {
 			if total > 0 {
 				pct := float64(done) / float64(total) * 100
 				database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{

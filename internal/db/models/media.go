@@ -48,7 +48,7 @@ type PrewarmEntry struct {
 type Media struct {
 	ID         string                  `bson:"_id" json:"id" goose:"required,default:uuid"`
 	Type       string                  `bson:"type" json:"type" goose:"default:video"`
-	FileName   *string                 `bson:"file_name,omitempty" json:"fileName,omitempty"`
+	FileName   *string                 `bson:"fileName,omitempty" json:"fileName,omitempty"`
 	MimeType   *string                 `bson:"mimeType,omitempty" json:"mimeType,omitempty"`
 	Resolution *string                 `bson:"resolution,omitempty" json:"resolution,omitempty" goose:"index"`
 	StorageID  *string                 `bson:"storageId,omitempty" json:"storageId,omitempty" goose:"ref:storages,index"`

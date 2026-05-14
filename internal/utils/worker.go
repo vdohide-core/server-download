@@ -78,6 +78,14 @@ func (pl *ProcessLogger) Printf(format string, v ...interface{}) {
 	log.Printf(format, v...)
 }
 
+// LogMain writes a key milestone to BOTH the main rotating log AND the current process file.
+// Use for summary events: start, encode, upload, end, error.
+func LogMain(format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	log.Printf("%s", msg)                                                                   // → process file (current log output)
+	fmt.Fprintf(logger.GlobalWriter, "%s %s\n", time.Now().Format("2006/01/02 15:04:05"), msg) // → main rotating log
+}
+
 // ─── Old Log Cleanup ──────────────────────────────────────────
 
 // CleanOldLogs removes process log files older than 7 days.

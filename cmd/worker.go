@@ -96,6 +96,7 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 	}
 
 	log.Printf("📋 [%s] Source type: %s", slug, sourceType)
+	utils.LogMain("📥 [%s] START (source: %s)", slug, sourceType)
 
 	fileName := models.FileNameOriginal
 	resolution := models.ResolutionOriginal
@@ -418,6 +419,7 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 		defer procLock.Release()
 
 		startStep(ctx, process.ID, "merge")
+		utils.LogMain("🔄 [%s] ENCODE", slug)
 		faststartPath := filepath.Join(downloadDir, fileName)
 		if err := downloader.EnsureH264Faststart(mp4Path, faststartPath, func(pct int) {
 			database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{
@@ -474,6 +476,7 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 	localStorageID := config.AppConfig.StorageId
 
 	startStep(ctx, process.ID, "upload")
+	utils.LogMain("📤 [%s] UPLOAD → %s", slug, storage.Name)
 
 	if localStoragePath != "" && localStorageID != "" {
 		log.Printf("📤 [%s] Moving to local storage...", slug)
@@ -606,6 +609,7 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 	database.VideoProcess().DeleteOne(ctx, bson.M{"_id": process.ID})
 	downloader.Cleanup(downloadDir)
 
+	utils.LogMain("✅ [%s] COMPLETE!", slug)
 	log.Printf("✅ [%s] COMPLETE!", slug)
 	return nil
 }

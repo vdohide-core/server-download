@@ -55,6 +55,7 @@ func isCancelled(ctx context.Context, processID string) bool {
 // until retryCount >= 3, then marks file → error and deletes process.
 
 func failProcess(ctx context.Context, processID, fileID, slug, errMsg string) {
+	utils.LogMain("❌ [%s] ERROR: %s", slug, errMsg)
 	category := categorizeError(errMsg)
 	now := time.Now()
 

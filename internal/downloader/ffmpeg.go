@@ -424,10 +424,14 @@ func MergeToMP4WithReencode(segmentFiles []string, outputPath string, onProgress
 		"-i", listPath,
 		"-c:v", "libx264",
 		"-preset", "fast",
+		"-profile:v", "high",
+		"-level", "4.0",
+		"-pix_fmt", "yuv420p",
 		"-crf", "23",
 		"-c:a", "aac",
 		"-b:a", "128k",
 		"-movflags", "+faststart",
+		"-strict", "experimental",
 		outputPath,
 	)
 
@@ -517,10 +521,14 @@ func TranscodeToH264(inputPath, outputPath string, onProgress func(percent int))
 		"-i", inputPath,
 		"-c:v", "libx264",
 		"-preset", "fast",
+		"-profile:v", "high",
+		"-level", "4.0",
+		"-pix_fmt", "yuv420p",
 		"-crf", "23",
 		"-c:a", "aac",
 		"-b:a", "128k",
 		"-movflags", "+faststart",
+		"-strict", "experimental",
 		outputPath,
 	)
 

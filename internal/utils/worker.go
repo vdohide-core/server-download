@@ -45,6 +45,7 @@ type ProcessLogger struct {
 
 // NewProcessLogger creates a per-process file logger and redirects global log output
 // to io.MultiWriter(globalRotatingLog, processFile) so every log.Printf goes to both.
+// On retry, it appends to the existing log file instead of overwriting.
 func NewProcessLogger(slug string) *ProcessLogger {
 	logDir := filepath.Join("logs", "process")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
@@ -53,9 +54,9 @@ func NewProcessLogger(slug string) *ProcessLogger {
 	}
 
 	logPath := filepath.Join(logDir, fmt.Sprintf("%s.log", slug))
-	f, err := os.Create(logPath)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Printf("⚠️ Failed to create process log: %v", err)
+		log.Printf("⚠️ Failed to open process log: %v", err)
 		return &ProcessLogger{}
 	}
 

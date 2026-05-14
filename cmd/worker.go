@@ -109,35 +109,107 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 	switch sourceType {
 	case "upload":
 		isDirectMP4 = true
-		startStep(ctx, process.ID, "download")
 		os.MkdirAll(downloadDir, 0755)
 		mp4Path = filepath.Join(downloadDir, "source.mp4")
 
-		// Find ingest record
-		var ingest models.Ingest
-		if err := database.Ingests().FindOne(ctx, bson.M{"fileId": file.ID}).Decode(&ingest); err != nil {
-			failProcess(ctx, process.ID, fileID, slug, "ingest record not found")
-			return fmt.Errorf("ingest not found")
-		}
+		// Skip download if source already exists (retry after encode failure)
+		if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024 {
+			log.Printf("♻️ [%s] Source file exists (%.2f MB) — skipping download", slug, float64(info.Size())/1024/1024)
+			completeStep(ctx, process.ID, "download")
+		} else {
+			startStep(ctx, process.ID, "download")
 
-		ingestPathVal := derefStr(ingest.Path)
-		if ingestPathVal == "" {
-			failProcess(ctx, process.ID, fileID, slug, "ingest has no path")
-			return fmt.Errorf("ingest has no path")
-		}
+			// Find ingest record
+			var ingest models.Ingest
+			if err := database.Ingests().FindOne(ctx, bson.M{"fileId": file.ID}).Decode(&ingest); err != nil {
+				failProcess(ctx, process.ID, fileID, slug, "ingest record not found")
+				return fmt.Errorf("ingest not found")
+			}
 
-		// Find ingest storage
-		var ingestStorage models.Storage
-		storageLoaded := false
-		if ingest.StorageID != nil && *ingest.StorageID != "" {
-			if err := database.Storages().FindOne(ctx, bson.M{"_id": *ingest.StorageID}).Decode(&ingestStorage); err == nil {
-				storageLoaded = true
+			ingestPathVal := derefStr(ingest.Path)
+			if ingestPathVal == "" {
+				failProcess(ctx, process.ID, fileID, slug, "ingest has no path")
+				return fmt.Errorf("ingest has no path")
+			}
+
+			// Find ingest storage
+			var ingestStorage models.Storage
+			storageLoaded := false
+			if ingest.StorageID != nil && *ingest.StorageID != "" {
+				if err := database.Storages().FindOne(ctx, bson.M{"_id": *ingest.StorageID}).Decode(&ingestStorage); err == nil {
+					storageLoaded = true
+				}
+			}
+
+			if storageLoaded && ingestStorage.Type == "s3" {
+				// Download from S3
+				if err := downloader.DownloadFromS3(&ingestStorage, ingestPathVal, mp4Path, func(done, total int64) {
+					if total > 0 {
+						pct := float64(done) / float64(total) * 100
+						database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{
+							"timeline.download.percent": pct, "overallPercent": pct * 0.33, "updatedAt": time.Now(),
+						}})
+					}
+				}); err != nil {
+					if isCancelled(ctx, process.ID) {
+						downloader.Cleanup(downloadDir)
+						return nil
+					}
+					failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("S3 download: %v", err))
+					return err
+				}
+			} else {
+				// Local filesystem
+				basePath := ""
+				if storageLoaded && ingestStorage.Local != nil && ingestStorage.Local.Path != "" {
+					basePath = ingestStorage.Local.Path
+				} else {
+					basePath = config.AppConfig.StoragePath
+				}
+
+				localSrc := ingestPathVal
+				if basePath != "" {
+					localSrc = filepath.Join(basePath, ingestPathVal)
+				}
+				log.Printf("📂 [%s] Local ingest file: %s", slug, localSrc)
+				if _, err := os.Stat(localSrc); err != nil {
+					failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("ingest file not found: %s", localSrc))
+					return fmt.Errorf("ingest file not found")
+				}
+				// Copy to download dir so we can work on it
+				if err := copyFileLocal(localSrc, mp4Path); err != nil {
+					failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("copy ingest: %v", err))
+					return err
+				}
 			}
 		}
 
-		if storageLoaded && ingestStorage.Type == "s3" {
-			// Download from S3
-			if err := downloader.DownloadFromS3(&ingestStorage, ingestPathVal, mp4Path, func(done, total int64) {
+	case "gdrive":
+		isDirectMP4 = true
+		os.MkdirAll(downloadDir, 0755)
+		mp4Path = filepath.Join(downloadDir, "source.mp4")
+
+		// Skip download if source already exists (retry after encode failure)
+		if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024 {
+			log.Printf("♻️ [%s] Source file exists (%.2f MB) — skipping download", slug, float64(info.Size())/1024/1024)
+			completeStep(ctx, process.ID, "download")
+		} else {
+			startStep(ctx, process.ID, "download")
+
+			source := ""
+			if file.Metadata != nil && file.Metadata.Source != nil {
+				source = *file.Metadata.Source
+			}
+			if source == "" {
+				failProcess(ctx, process.ID, fileID, slug, "no Google Drive file ID")
+				return fmt.Errorf("no gdrive source")
+			}
+
+			fileSpaceId := ""
+			if file.SpaceID != nil {
+				fileSpaceId = *file.SpaceID
+			}
+			if err := downloader.DownloadFromGDrive(source, mp4Path, database.Oauths(), fileSpaceId, func(done, total int64) {
 				if total > 0 {
 					pct := float64(done) / float64(total) * 100
 					database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{
@@ -146,78 +218,20 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 				}
 			}); err != nil {
 				if isCancelled(ctx, process.ID) {
+					log.Printf("⏹️ [%s] Cancelled during GDrive download", slug)
 					downloader.Cleanup(downloadDir)
 					return nil
 				}
-				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("S3 download: %v", err))
+				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("GDrive download: %v", err))
 				return err
 			}
-		} else {
-			// Local filesystem
-			basePath := ""
-			if storageLoaded && ingestStorage.Local != nil && ingestStorage.Local.Path != "" {
-				basePath = ingestStorage.Local.Path
-			} else {
-				basePath = config.AppConfig.StoragePath
-			}
 
-			localSrc := ingestPathVal
-			if basePath != "" {
-				localSrc = filepath.Join(basePath, ingestPathVal)
-			}
-			log.Printf("📂 [%s] Local ingest file: %s", slug, localSrc)
-			if _, err := os.Stat(localSrc); err != nil {
-				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("ingest file not found: %s", localSrc))
-				return fmt.Errorf("ingest file not found")
-			}
-			// Copy to download dir so we can work on it
-			if err := copyFileLocal(localSrc, mp4Path); err != nil {
-				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("copy ingest: %v", err))
-				return err
-			}
-		}
-
-	case "gdrive":
-		isDirectMP4 = true
-		startStep(ctx, process.ID, "download")
-		os.MkdirAll(downloadDir, 0755)
-		mp4Path = filepath.Join(downloadDir, "source.mp4")
-
-		source := ""
-		if file.Metadata != nil && file.Metadata.Source != nil {
-			source = *file.Metadata.Source
-		}
-		if source == "" {
-			failProcess(ctx, process.ID, fileID, slug, "no Google Drive file ID")
-			return fmt.Errorf("no gdrive source")
-		}
-
-		fileSpaceId := ""
-		if file.SpaceID != nil {
-			fileSpaceId = *file.SpaceID
-		}
-		if err := downloader.DownloadFromGDrive(source, mp4Path, database.Oauths(), fileSpaceId, func(done, total int64) {
-			if total > 0 {
-				pct := float64(done) / float64(total) * 100
-				database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{
-					"timeline.download.percent": pct, "overallPercent": pct * 0.33, "updatedAt": time.Now(),
-				}})
-			}
-		}); err != nil {
+			// Check cancellation after gdrive download
 			if isCancelled(ctx, process.ID) {
-				log.Printf("⏹️ [%s] Cancelled during GDrive download", slug)
+				log.Printf("⏹️ [%s] Cancelled after GDrive download", slug)
 				downloader.Cleanup(downloadDir)
 				return nil
 			}
-			failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("GDrive download: %v", err))
-			return err
-		}
-
-		// Check cancellation after gdrive download
-		if isCancelled(ctx, process.ID) {
-			log.Printf("⏹️ [%s] Cancelled after GDrive download", slug)
-			downloader.Cleanup(downloadDir)
-			return nil
 		}
 
 	case "direct":
@@ -285,20 +299,26 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 			isDirectMP4 = true
 			mp4Path = filepath.Join(downloadDir, "source.mp4")
 
-			if err := downloader.DownloadDirectFile(source, mp4Path, func(done, total int64) {
-				if total > 0 {
-					pct := float64(done) / float64(total) * 100
-					database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{
-						"timeline.download.percent": pct, "overallPercent": pct * 0.33, "updatedAt": time.Now(),
-					}})
+			// Skip download if source already exists (retry after encode failure)
+			if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024 {
+				log.Printf("♻️ [%s] Source file exists (%.2f MB) — skipping download", slug, float64(info.Size())/1024/1024)
+				completeStep(ctx, process.ID, "download")
+			} else {
+				if err := downloader.DownloadDirectFile(source, mp4Path, func(done, total int64) {
+					if total > 0 {
+						pct := float64(done) / float64(total) * 100
+						database.VideoProcess().UpdateOne(ctx, bson.M{"_id": process.ID}, bson.M{"$set": bson.M{
+							"timeline.download.percent": pct, "overallPercent": pct * 0.33, "updatedAt": time.Now(),
+						}})
+					}
+				}); err != nil {
+					if isCancelled(ctx, process.ID) {
+						downloader.Cleanup(downloadDir)
+						return nil
+					}
+					failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("direct download: %v", err))
+					return err
 				}
-			}); err != nil {
-				if isCancelled(ctx, process.ID) {
-					downloader.Cleanup(downloadDir)
-					return nil
-				}
-				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("direct download: %v", err))
-				return err
 			}
 		}
 
@@ -404,8 +424,9 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 				"timeline.merge.percent": float64(pct), "overallPercent": 33 + float64(pct)*0.33, "updatedAt": time.Now(),
 			}})
 		}); err != nil {
-			downloader.Cleanup(downloadDir)
+			// Don't cleanup on encode failure — keep source.mp4 for retry
 			if isCancelled(ctx, process.ID) {
+				downloader.Cleanup(downloadDir)
 				return nil
 			}
 			failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("H264 encode failed: %v", err))

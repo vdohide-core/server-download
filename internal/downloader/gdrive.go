@@ -175,6 +175,12 @@ func DownloadFromGDrive(gdriveFileID string, outputPath string, oauthsCol *mongo
 			log.Printf("⚠️  OAuth token refresh failed: %v — trying public download", err)
 		} else {
 			accessToken = token
+			// Mask client_id for logging: show first 8 chars
+			maskedClient := oauth.ClientID
+			if len(maskedClient) > 8 {
+				maskedClient = maskedClient[:8] + "..."
+			}
+			log.Printf("🔑 [oauth] Using OAuth id=%s client=%s", oauth.ID, maskedClient)
 		}
 	}
 
@@ -184,9 +190,11 @@ func DownloadFromGDrive(gdriveFileID string, outputPath string, oauthsCol *mongo
 
 	// Public download (no OAuth token)
 	if accessToken == "" {
-		log.Printf("📥 [public] Downloading via public URL...")
+		log.Printf("📥 [public] Downloading via public URL (no OAuth)...")
 		return downloadGDrivePublic(gdriveFileID, outputPath, onProgress)
 	}
+
+	log.Printf("📥 [oauth] Downloading via authenticated API...")
 
 	// Authenticated download
 	fileInfo, err := getGDriveFileInfo(gdriveFileID, accessToken)

@@ -145,6 +145,10 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 					}})
 				}
 			}); err != nil {
+				if isCancelled(ctx, process.ID) {
+					downloader.Cleanup(downloadDir)
+					return nil
+				}
 				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("S3 download: %v", err))
 				return err
 			}
@@ -200,8 +204,20 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 				}})
 			}
 		}); err != nil {
+			if isCancelled(ctx, process.ID) {
+				log.Printf("⏹️ [%s] Cancelled during GDrive download", slug)
+				downloader.Cleanup(downloadDir)
+				return nil
+			}
 			failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("GDrive download: %v", err))
 			return err
+		}
+
+		// Check cancellation after gdrive download
+		if isCancelled(ctx, process.ID) {
+			log.Printf("⏹️ [%s] Cancelled after GDrive download", slug)
+			downloader.Cleanup(downloadDir)
+			return nil
 		}
 
 	case "direct":
@@ -277,9 +293,19 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 					}})
 				}
 			}); err != nil {
+				if isCancelled(ctx, process.ID) {
+					downloader.Cleanup(downloadDir)
+					return nil
+				}
 				failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("direct download: %v", err))
 				return err
 			}
+		}
+
+		// Check cancellation after direct download
+		if isCancelled(ctx, process.ID) {
+			downloader.Cleanup(downloadDir)
+			return nil
 		}
 
 	default: // HLS / remote / missav / xvideos / pornhub
@@ -358,6 +384,13 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 		log.Printf("✅ [%s] Merge complete (%.2f MB)", slug, float64(fileSize)/1024/1024)
 	}
 
+	// Check cancellation before heavy processing
+	if isCancelled(ctx, process.ID) {
+		log.Printf("⏹️ [%s] Cancelled before processing", slug)
+		downloader.Cleanup(downloadDir)
+		return nil
+	}
+
 	// For direct MP4: ensure h264 + faststart
 	if isDirectMP4 {
 		log.Printf("🔒 [%s] Waiting for processing lock...", slug)
@@ -372,6 +405,9 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 			}})
 		}); err != nil {
 			downloader.Cleanup(downloadDir)
+			if isCancelled(ctx, process.ID) {
+				return nil
+			}
 			failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("H264 encode failed: %v", err))
 			return fmt.Errorf("H264 encode failed: %w", err)
 		}
@@ -387,6 +423,7 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 	}
 
 	if isCancelled(ctx, process.ID) {
+		log.Printf("⏹️ [%s] Cancelled after processing", slug)
 		downloader.Cleanup(downloadDir)
 		return nil
 	}

@@ -2,11 +2,14 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"server-download/internal/logger"
 )
 
 // ─── Worker ID ───────────────────────────────────────────────
@@ -35,13 +38,13 @@ func RandomString(n int, special bool) string {
 
 // ─── Process Logger ──────────────────────────────────────────
 
-// ProcessLogger redirects the global logger to write to both stdout and a per-process log file.
+// ProcessLogger writes to both the global rotating log and a per-process log file.
 type ProcessLogger struct {
 	file *os.File
 }
 
 // NewProcessLogger creates a per-process file logger and redirects global log output
-// to io.MultiWriter(stdout, file) so every log.Printf goes to both console and file.
+// to io.MultiWriter(globalRotatingLog, processFile) so every log.Printf goes to both.
 func NewProcessLogger(slug string) *ProcessLogger {
 	logDir := filepath.Join("logs", "process")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
@@ -56,15 +59,15 @@ func NewProcessLogger(slug string) *ProcessLogger {
 		return &ProcessLogger{}
 	}
 
-	// Redirect global logger → file only (ไม่ออก console ระหว่าง process)
-	log.SetOutput(f)
+	// Redirect global logger → both rotating file + per-process file
+	log.SetOutput(io.MultiWriter(logger.GlobalWriter, f))
 
 	return &ProcessLogger{file: f}
 }
 
-// Close restores the global logger to stdout-only and closes the log file.
+// Close restores the global logger to the rotating file only and closes the per-process file.
 func (pl *ProcessLogger) Close() {
-	log.SetOutput(os.Stdout)
+	log.SetOutput(logger.GlobalWriter)
 	if pl.file != nil {
 		pl.file.Close()
 	}

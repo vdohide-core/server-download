@@ -2,13 +2,20 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"server-download/internal/config"
 	"server-download/internal/db/database"
 	"server-download/internal/db/models"
+	"server-download/internal/handlers"
+	"server-download/internal/logger"
+	"server-download/internal/middleware"
 	"server-download/internal/utils"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -23,13 +30,87 @@ func main() {
 	workerID = utils.GenerateWorkerID()
 	log.Printf("Starting Server Download [Worker: %s]", workerID)
 
+	// Init file logger (writes to rotating log file)
+	logCloser, err := logger.Init(config.AppConfig.LogPath)
+	if err != nil {
+		log.Printf("⚠️ File logging disabled: %v", err)
+	} else {
+		defer logCloser.Close()
+		log.Printf("📝 Logging to: %s (max 25MB per file)", config.AppConfig.LogPath)
+	}
+
 	if err := database.Connect(); err != nil {
 		log.Printf("ERROR: Failed to connect to MongoDB: %v", err)
 		time.Sleep(5 * time.Second)
 		os.Exit(1)
 	}
 	defer database.Disconnect()
+	log.Println("✅ MongoDB connected")
 
+	// ── HTTP Server for Log Viewer ────────────────────────────
+	port := config.AppConfig.Port
+	if port == "" {
+		port = "8080"
+	}
+
+	logDir := filepath.Dir(config.AppConfig.LogPath)
+	h := handlers.NewHandler(handlers.Handler{LogDir: logDir})
+
+	// Start WebSocket hub
+	go handlers.GlobalHub.Run()
+
+	// Start log file watcher (broadcasts changes to WS clients)
+	go handlers.WatchLogDir(logDir)
+
+	// Setup HTTP routes
+	mux := http.NewServeMux()
+
+	// Route: /health — Health check
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","service":"server-download","worker":"%s"}`, workerID)
+	})
+
+	// Route: /logs — Log list API
+	mux.HandleFunc("/logs", h.HandleLogList)
+	mux.HandleFunc("/logs/", h.HandleLogFile)
+
+	// Route: /ui — Log viewer web interface
+	mux.HandleFunc("/ui", h.HandleUI)
+
+	// Route: /ws — WebSocket (real-time log streaming)
+	mux.HandleFunc("/ws", h.HandleWS)
+
+	// Catch-all → 404
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+
+	// Start HTTP server in background goroutine
+	// If port is already in use (another worker on same machine), skip silently.
+	// All workers share the same logs/ directory, so one HTTP server is enough.
+	go func() {
+		ln, err := net.Listen("tcp", ":"+port)
+		if err != nil {
+			log.Printf("📋 Log viewer skipped (port %s in use by another worker)", port)
+			return
+		}
+		server := &http.Server{
+			Handler: middleware.CORS(mux),
+		}
+		log.Printf("🌐 Log viewer: http://localhost:%s/ui", port)
+		log.Printf("📍 Endpoints:")
+		log.Printf("   GET /health        - Health check")
+		log.Printf("   GET /logs          - Log file list")
+		log.Printf("   GET /logs/{file}   - Log file reader")
+		log.Printf("   GET /ui            - Log viewer UI")
+		log.Printf("   WS  /ws            - Real-time log stream")
+		if err := server.Serve(ln); err != http.ErrServerClosed {
+			log.Printf("⚠️ HTTP server error: %v", err)
+		}
+	}()
+
+	// ── Worker Loop ──────────────────────────────────────────
 	startWorkerLoop()
 }
 

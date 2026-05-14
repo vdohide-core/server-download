@@ -17,6 +17,8 @@ type Config struct {
 	StorageId   string
 	StoragePath string
 	ScraperURL  string
+
+	LogPath string // Path to rotating log file (env: LOG_PATH)
 }
 
 // Load reads configuration from environment variables (and .env file).
@@ -39,6 +41,7 @@ func Load() {
 		StorageId:   getEnv("STORAGE_ID", ""),
 		StoragePath: getEnv("STORAGE_PATH", "./files"),
 		ScraperURL:  getEnv("SCRAPER_URL", ""),
+		LogPath:     getEnv("LOG_PATH", "logs/server-download.log"),
 	}
 }
 

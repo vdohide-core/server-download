@@ -438,6 +438,12 @@ func downloadGDriveFile(fileID, accessToken, outputPath string, onProgress func(
 	}
 	out.Close()
 
+	// Guard: reject empty or suspiciously small files
+	if downloaded < 10*1024 {
+		os.Remove(outputPath + ".tmp")
+		return fmt.Errorf("GDrive download failed: file too small (%d bytes) — likely not the actual video file", downloaded)
+	}
+
 	if err := os.Rename(outputPath+".tmp", outputPath); err != nil {
 		return fmt.Errorf("rename temp file: %w", err)
 	}

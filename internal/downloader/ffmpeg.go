@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MergeResult contains the result of ffmpeg merge
@@ -278,34 +279,62 @@ type VideoInfo struct {
 func ProbeVideoInfo(filePath string) (*VideoInfo, error) {
 	info := &VideoInfo{}
 
-	cmd := exec.Command("ffprobe",
-		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "stream=width,height",
-		"-of", "csv=s=x:p=0",
-		filePath,
-	)
-	output, err := cmd.Output()
-	if err == nil {
-		parts := strings.Split(strings.TrimSpace(string(output)), "x")
+	probeResolution := func() {
+		cmd := exec.Command("ffprobe",
+			"-v", "error",
+			"-select_streams", "v:0",
+			"-show_entries", "stream=width,height",
+			"-of", "csv=s=x:p=0",
+			filePath,
+		)
+		output, err := cmd.Output()
+		if err != nil {
+			log.Printf("⚠️  ffprobe resolution failed: %v", err)
+			return
+		}
+		raw := strings.TrimSpace(string(output))
+		parts := strings.Split(raw, "x")
 		if len(parts) == 2 {
-			w, _ := strconv.ParseInt(parts[0], 10, 64)
-			h, _ := strconv.ParseInt(parts[1], 10, 64)
+			w, _ := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+			h, _ := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
 			info.Width = w
 			info.Height = h
+		} else {
+			log.Printf("⚠️  ffprobe resolution unexpected output: %q", raw)
 		}
 	}
 
-	cmd = exec.Command("ffprobe",
-		"-v", "error",
-		"-show_entries", "format=duration",
-		"-of", "default=noprint_wrappers=1:nokey=1",
-		filePath,
-	)
-	output, err = cmd.Output()
-	if err == nil {
+	probeDuration := func() {
+		cmd := exec.Command("ffprobe",
+			"-v", "error",
+			"-show_entries", "format=duration",
+			"-of", "default=noprint_wrappers=1:nokey=1",
+			filePath,
+		)
+		output, err := cmd.Output()
+		if err != nil {
+			log.Printf("⚠️  ffprobe duration failed: %v", err)
+			return
+		}
 		dur, _ := strconv.ParseFloat(strings.TrimSpace(string(output)), 64)
 		info.Duration = int64(dur)
+	}
+
+	probeResolution()
+	probeDuration()
+
+	// Retry once if resolution is missing (file may still be flushing to disk)
+	if info.Width == 0 && info.Height == 0 {
+		log.Printf("⚠️  Resolution is 0x0 — retrying probe in 2s...")
+		time.Sleep(2 * time.Second)
+		probeResolution()
+		if info.Duration == 0 {
+			probeDuration()
+		}
+	}
+
+	if info.Width == 0 && info.Height == 0 {
+		return info, fmt.Errorf("ffprobe failed to detect resolution for %s", filepath.Base(filePath))
 	}
 
 	return info, nil

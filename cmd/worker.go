@@ -371,14 +371,12 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 				"timeline.merge.percent": float64(pct), "overallPercent": 33 + float64(pct)*0.33, "updatedAt": time.Now(),
 			}})
 		}); err != nil {
-			log.Printf("⚠️ [%s] H264 faststart failed: %v — using original", slug, err)
-			if mp4Path != faststartPath {
-				os.Rename(mp4Path, faststartPath)
-			}
-		} else {
-			if mp4Path != faststartPath {
-				os.Remove(mp4Path)
-			}
+			downloader.Cleanup(downloadDir)
+			failProcess(ctx, process.ID, fileID, slug, fmt.Sprintf("H264 encode failed: %v", err))
+			return fmt.Errorf("H264 encode failed: %w", err)
+		}
+		if mp4Path != faststartPath {
+			os.Remove(mp4Path)
 		}
 		mp4Path = faststartPath
 		if info, err := os.Stat(mp4Path); err == nil {
@@ -395,7 +393,11 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 
 	// ─── Probe video info ──────────────────────────────────────
 	var videoWidth, videoHeight, videoDuration int64
-	if vi, err := downloader.ProbeVideoInfo(mp4Path); err == nil {
+	vi, probeErr := downloader.ProbeVideoInfo(mp4Path)
+	if probeErr != nil {
+		log.Printf("⚠️  [%s] Video probe failed: %v — metadata.highest will not be set", slug, probeErr)
+	}
+	if vi != nil {
 		videoWidth, videoHeight, videoDuration = vi.Width, vi.Height, vi.Duration
 		log.Printf("📐 [%s] Probed: %dx%d, dur=%ds", slug, videoWidth, videoHeight, videoDuration)
 	}
@@ -505,7 +507,7 @@ func runProcess(ctx context.Context, process *models.VideoProcess) error {
 	// Update cloned files → ready
 	cloneUpdate := bson.M{"status": models.FileStatusReady, "updatedAt": now}
 	if shortSide > 0 {
-		cloneUpdate["metadata.highest"] = int(shortSide)
+		cloneUpdate["metadata.highest"] = DetermineHighestResolution(int(shortSide))
 	}
 	if videoDuration > 0 {
 		cloneUpdate["metadata.duration"] = videoDuration

@@ -2,7 +2,6 @@ package utils
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -44,7 +43,7 @@ type ProcessLogger struct {
 }
 
 // NewProcessLogger creates a per-process file logger and redirects global log output
-// to io.MultiWriter(globalRotatingLog, processFile) so every log.Printf goes to both.
+// to the process file ONLY during execution. The main rotating log stays clean.
 // On retry, it appends to the existing log file instead of overwriting.
 func NewProcessLogger(slug string) *ProcessLogger {
 	logDir := filepath.Join("logs", "process")
@@ -60,8 +59,8 @@ func NewProcessLogger(slug string) *ProcessLogger {
 		return &ProcessLogger{}
 	}
 
-	// Redirect global logger → both rotating file + per-process file
-	log.SetOutput(io.MultiWriter(logger.GlobalWriter, f))
+	// Redirect global logger → process file only (main log stays clean)
+	log.SetOutput(f)
 
 	return &ProcessLogger{file: f}
 }

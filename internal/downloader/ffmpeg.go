@@ -458,19 +458,48 @@ func MergeToMP4WithReencode(segmentFiles []string, outputPath string, onProgress
 	}, nil
 }
 
-// RemuxWithFaststart remuxes an MP4 file with -movflags +faststart
-func RemuxWithFaststart(inputPath, outputPath string) error {
+// RemuxWithFaststart remuxes a video with faststart.
+// Copies video stream but re-encodes audio to AAC (matches Node.js behavior).
+// This fixes corrupt audio packets from mpegts/HLS sources.
+// Falls back to full re-encode if remux fails.
+func RemuxWithFaststart(inputPath, outputPath string, onProgress func(percent int)) error {
+	// Get duration for progress tracking
+	var totalDuration float64
+	probeCmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	)
+	if out, err := probeCmd.Output(); err == nil {
+		totalDuration, _ = strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	}
+
 	cmd := exec.Command("ffmpeg",
 		"-y",
+		"-fflags", "+genpts+igndts+discardcorrupt",
+		"-err_detect", "ignore_err",
 		"-i", inputPath,
-		"-c", "copy",
+		"-c:v", "copy",
+		"-c:a", "aac",
+		"-b:a", "128k",
 		"-movflags", "+faststart",
+		"-strict", "experimental",
 		outputPath,
 	)
 
-	output, err := cmd.CombinedOutput()
+	err := runFFmpegWithProgress(cmd, totalDuration, onProgress)
 	if err != nil {
-		return fmt.Errorf("ffmpeg faststart failed: %w\n%s", err, string(output))
+		log.Printf("⚠️  Remux (copy+aac) failed: %v", err)
+		os.Remove(outputPath)
+
+		if strings.Contains(err.Error(), "No space left") {
+			return fmt.Errorf("remux failed (disk full): %w", err)
+		}
+
+		// Fallback: full re-encode
+		log.Printf("🔄 Falling back to full re-encode...")
+		return TranscodeToH264(inputPath, outputPath, onProgress)
 	}
 
 	info, err := os.Stat(outputPath)
@@ -478,7 +507,9 @@ func RemuxWithFaststart(inputPath, outputPath string) error {
 		return fmt.Errorf("output file not found: %w", err)
 	}
 	if info.Size() == 0 {
-		return fmt.Errorf("output file is empty")
+		os.Remove(outputPath)
+		log.Printf("⚠️  Remux output is empty — falling back to full re-encode...")
+		return TranscodeToH264(inputPath, outputPath, onProgress)
 	}
 
 	return nil
@@ -495,8 +526,8 @@ func EnsureH264Faststart(inputPath, outputPath string, onProgress func(percent i
 	log.Printf("📹 Detected codec: video=%s, audio=%s", codecInfo.VideoCodec, codecInfo.AudioCodec)
 
 	if strings.EqualFold(codecInfo.VideoCodec, "h264") {
-		log.Printf("✅ Video is h264 — remuxing with faststart (copy mode)")
-		return RemuxWithFaststart(inputPath, outputPath)
+		log.Printf("✅ Video is h264 — remuxing with faststart (copy video, re-encode audio)")
+		return RemuxWithFaststart(inputPath, outputPath, onProgress)
 	}
 
 	log.Printf("🔄 Video is %s (not h264) — re-encoding to h264 with faststart", codecInfo.VideoCodec)

@@ -234,30 +234,55 @@ func downloadGDrivePublic(fileID, outputPath string, onProgress func(downloaded,
 	}
 	defer resp.Body.Close()
 
-	// Handle large file confirmation page
+	// Handle large file confirmation / virus scan warning page
 	if resp.StatusCode == 200 && strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		// Extract confirm token from the HTML page
 		htmlStr := string(body)
 		confirmURL := ""
-		if idx := strings.Index(htmlStr, "href=\"/uc?export=download&amp;"); idx != -1 {
-			end := strings.Index(htmlStr[idx+6:], "\"")
-			if end != -1 {
-				confirmURL = "https://drive.google.com" + strings.ReplaceAll(htmlStr[idx+6:idx+6+end], "&amp;", "&")
+
+		// Strategy 1: New Google Drive format (2024+)
+		// <form action="https://drive.usercontent.google.com/download" method="get">
+		//   <input type="hidden" name="id" value="...">
+		//   <input type="hidden" name="export" value="download">
+		//   <input type="hidden" name="confirm" value="t">
+		//   <input type="hidden" name="uuid" value="...">
+		// </form>
+		if idx := strings.Index(htmlStr, "drive.usercontent.google.com/download"); idx != -1 {
+			params := extractHiddenInputs(htmlStr)
+			if params.Has("id") {
+				confirmURL = "https://drive.usercontent.google.com/download?" + params.Encode()
 			}
 		}
+
+		// Strategy 2: Legacy format — href="/uc?export=download&amp;..."
 		if confirmURL == "" {
-			// Try confirm=t parameter directly
-			confirmURL = dlURL + "&confirm=t"
+			if idx := strings.Index(htmlStr, "href=\"/uc?export=download&amp;"); idx != -1 {
+				end := strings.Index(htmlStr[idx+6:], "\"")
+				if end != -1 {
+					confirmURL = "https://drive.google.com" + strings.ReplaceAll(htmlStr[idx+6:idx+6+end], "&amp;", "&")
+				}
+			}
 		}
+
+		// Strategy 3: Fallback — new usercontent domain with confirm=t
+		if confirmURL == "" {
+			confirmURL = fmt.Sprintf("https://drive.usercontent.google.com/download?id=%s&export=download&confirm=t", fileID)
+		}
+
+		log.Printf("📥 [public] Confirm URL: %s", confirmURL)
 
 		resp, err = client.Get(confirmURL)
 		if err != nil {
 			return fmt.Errorf("public download confirm: %w", err)
 		}
 		defer resp.Body.Close()
+
+		// After confirm redirect, check if we still got HTML (auth wall / error)
+		if resp.StatusCode == 200 && strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+			return fmt.Errorf("access denied to Google Drive file: %s — file requires authentication (got HTML page after confirm)", fileID)
+		}
 	}
 
 	if resp.StatusCode == 404 {
@@ -269,6 +294,12 @@ func downloadGDrivePublic(fileID, outputPath string, onProgress func(downloaded,
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("public download error %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Final Content-Type guard: if we still get HTML, the file is not publicly accessible
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "text/html") {
+		return fmt.Errorf("access denied to Google Drive file: %s — file requires authentication (received HTML instead of file data)", fileID)
 	}
 
 	totalSize := resp.ContentLength
@@ -305,6 +336,12 @@ func downloadGDrivePublic(fileID, outputPath string, onProgress func(downloaded,
 		}
 	}
 	out.Close()
+
+	// Guard: if downloaded size is suspiciously small, it's likely an error page
+	if downloaded < 10*1024 {
+		os.Remove(outputPath + ".tmp")
+		return fmt.Errorf("Google Drive public download failed: file too small (%d bytes) — likely an auth/error page, not the actual file", downloaded)
+	}
 
 	if err := os.Rename(outputPath+".tmp", outputPath); err != nil {
 		return fmt.Errorf("rename temp file: %w", err)
@@ -408,4 +445,54 @@ func downloadGDriveFile(fileID, accessToken, outputPath string, onProgress func(
 	sizeMB := float64(downloaded) / 1024 / 1024
 	log.Printf("✅ Downloaded %.2f MB from Google Drive", sizeMB)
 	return nil
+}
+
+// extractHiddenInputs parses all <input type="hidden" name="..." value="..."> from HTML
+// and returns them as url.Values for building query strings.
+func extractHiddenInputs(html string) url.Values {
+	params := url.Values{}
+	// Match <input type="hidden" name="..." value="...">
+	// Handle both single and double quotes, and any attribute order
+	remaining := html
+	for {
+		idx := strings.Index(remaining, "<input ")
+		if idx == -1 {
+			break
+		}
+		// Find the end of this tag
+		end := strings.Index(remaining[idx:], ">")
+		if end == -1 {
+			break
+		}
+		tag := remaining[idx : idx+end+1]
+		remaining = remaining[idx+end+1:]
+
+		// Only process hidden inputs
+		if !strings.Contains(tag, "type=\"hidden\"") {
+			continue
+		}
+
+		name := extractAttr(tag, "name")
+		value := extractAttr(tag, "value")
+		if name != "" {
+			params.Set(name, value)
+		}
+	}
+	return params
+}
+
+// extractAttr extracts an attribute value from an HTML tag string.
+// e.g. extractAttr(`<input name="id" value="abc">`, "name") returns "id"
+func extractAttr(tag, attr string) string {
+	search := attr + "=\""
+	idx := strings.Index(tag, search)
+	if idx == -1 {
+		return ""
+	}
+	start := idx + len(search)
+	end := strings.Index(tag[start:], "\"")
+	if end == -1 {
+		return ""
+	}
+	return tag[start : start+end]
 }
